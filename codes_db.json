@@ -1,0 +1,77 @@
+{
+  "E11": {
+    "description": "Type 2 diabetes mellitus",
+    "category": "Endocrine",
+    "common_comorbidities": ["I10", "N18", "E78"]
+  },
+  "I10": {
+    "description": "Essential (primary) hypertension",
+    "category": "Cardiovascular",
+    "common_comorbidities": ["E11", "I25", "N18"]
+  },
+  "N18": {
+    "description": "Chronic kidney disease (CKD)",
+    "category": "Renal",
+    "common_comorbidities": ["E11", "I10", "I50"]
+  },
+  "I25": {
+    "description": "Chronic ischemic heart disease (Coronary Artery Disease)",
+    "category": "Cardiovascular",
+    "common_comorbidities": ["I10", "E11", "I50"]
+  },
+  "J44": {
+    "description": "Chronic obstructive pulmonary disease (COPD)",
+    "category": "Respiratory",
+    "common_comorbidities": ["I10", "I50", "J45"]
+  },
+  "J45": {
+    "description": "Asthma",
+    "category": "Respiratory",
+    "common_comorbidities": ["J44", "J30"]
+  },
+  "I50": {
+    "description": "Heart failure",
+    "category": "Cardiovascular",
+    "common_comorbidities": ["I25", "I10", "N18"]
+  },
+  "E78": {
+    "description": "Disorders of lipoprotein metabolism (Hyperlipidemia)",
+    "category": "Endocrine",
+    "common_comorbidities": ["E11", "I25", "I10"]
+  },
+  "M79.3": {
+    "description": "Panniculitis (soft tissue disorder)",
+    "category": "Musculoskeletal",
+    "common_comorbidities": []
+  },
+  "F32": {
+    "description": "Major depressive disorder, single episode",
+    "category": "Mental Health",
+    "common_comorbidities": ["E11", "I10", "F41"]
+  },
+  "F41": {
+    "description": "Anxiety disorder",
+    "category": "Mental Health",
+    "common_comorbidities": ["F32", "I10"]
+  },
+  "K21": {
+    "description": "Gastro-esophageal reflux disease (GERD)",
+    "category": "Gastrointestinal",
+    "common_comorbidities": ["E11", "J45"]
+  },
+  "M81": {
+    "description": "Osteoporosis without current pathological fracture",
+    "category": "Musculoskeletal",
+    "common_comorbidities": ["E11", "N18"]
+  },
+  "G47.3": {
+    "description": "Sleep apnea",
+    "category": "Neurological",
+    "common_comorbidities": ["E11", "I10", "I50"]
+  },
+  "Z87.891": {
+    "description": "Personal history of nicotine dependence",
+    "category": "History",
+    "common_comorbidities": ["J44", "I25"]
+  }
+}
