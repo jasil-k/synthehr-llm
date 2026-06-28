@@ -43,7 +43,28 @@ header[data-testid="stHeader"] {
 
 }
 
+/* ---------- Hide Streamlit Platform Chrome ---------- */
+#MainMenu {
+    visibility: hidden !important;
+    display: none !important;
+}
 
+footer {
+    visibility: hidden !important;
+    display: none !important;
+}
+
+div[data-testid="stToolbarActions"] {
+    display: none !important;
+}
+
+div[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+
+a[href*="github.com"] {
+    display: none !important;
+}
 
 /* ---------- Headings & Labels ---------- */
 
