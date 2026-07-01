@@ -484,7 +484,7 @@ code_options = [f"{c['code']} — {c['description']}" for c in all_codes]
 # ═══════════════════════════════════════════════
 
 if mode == "Single Patient":
-    st.title("🧍 Single Patient Generator")
+    st.title("Single Patient Generator")
     st.caption("Generate one synthetic patient with a full longitudinal timeline.")
 
     with st.form("single_patient_form"):
@@ -534,13 +534,10 @@ elif mode == "Evaluation":
 # ═══════════════════════════════════════════════
 
 else:
-    st.title("👥 Bulk Cohort Generator")
+    st.title("Bulk Cohort Generator")
     st.caption("Generate a cohort of synthetic patients for statistical evaluation.")
     st.warning(
-        "Gemini free tier = 5 requests/minute. Each patient = 2 calls, so "
-        "generation is throttled to ~2.5 patients/minute automatically. "
-        "A 10-patient cohort takes ~4 minutes — this is expected, not a bug. "
-        "Check your terminal for '⏳ rate limit guard' messages during the wait."
+      "⏳ This may take a few minutes for multiple patients. Thanks for your patience."
     )
 
     with st.form("bulk_cohort_form"):

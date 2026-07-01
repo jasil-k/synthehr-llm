@@ -4,7 +4,10 @@
 import json
 import uuid
 import random
-from datetime import date
+import time
+import threading
+from collections import deque
+from datetime import date, timedelta
 from pathlib import Path
 
 from faker import Faker
@@ -15,9 +18,6 @@ load_dotenv()
 
 fake = Faker()
 
-import time
-import threading
-from collections import deque
 
 class RateLimiter:
     """
@@ -34,7 +34,6 @@ class RateLimiter:
     def wait(self):
         with self._lock:
             now = time.monotonic()
-            # drop timestamps that have fully exited the window
             while self._timestamps and now - self._timestamps[0] >= self.period:
                 self._timestamps.popleft()
 
@@ -52,8 +51,62 @@ class RateLimiter:
 
 
 # Single shared limiter instance for ALL Gemini calls in this module.
-# Free tier = 5 RPM. Set max_calls=5 to match; change here if your quota changes.
 _gemini_rate_limiter = RateLimiter(max_calls=5, period_seconds=60.0)
+
+
+# ─── Retry-with-backoff wrapper ───────────────────────────────────────────────
+
+def _call_with_retry(llm, messages, status_callback=None):
+    """
+    Calls llm.invoke(messages) with automatic retry on 429 RESOURCE_EXHAUSTED.
+
+    Strategy:
+    - Up to 3 attempts total (1 original + 2 retries)
+    - Waits: 20s after 1st failure, 45s after 2nd failure
+    - If all 3 attempts fail, raises the last exception so the caller
+      can surface a clean error message — not a raw traceback
+    - status_callback(msg): optional function to show a message in the UI
+      during retries (pass st.warning or a custom function from app.py)
+    """
+    wait_times = [20, 45]  # seconds to wait before retry 1, retry 2
+    last_exception = None
+
+    for attempt in range(3):
+        try:
+            return llm.invoke(messages)
+
+        except Exception as e:
+            error_str = str(e)
+            # Only retry on 429 / RESOURCE_EXHAUSTED — all other errors
+            # (bad API key, network down, model error) should fail immediately
+            if "429" not in error_str and "RESOURCE_EXHAUSTED" not in error_str:
+                raise
+
+            last_exception = e
+
+            if attempt < 2:
+                wait_sec = wait_times[attempt]
+                msg = (
+                    f"⏳ Gemini is briefly busy (rate limit). "
+                    f"Retrying automatically in {wait_sec}s... "
+                    f"(attempt {attempt + 1}/3)"
+                )
+                print(f"  {msg}")
+                if status_callback:
+                    status_callback(msg)
+                time.sleep(wait_sec)
+            else:
+                # All 3 attempts exhausted
+                final_msg = (
+                    "⚠️ Gemini is temporarily unavailable after 3 attempts. "
+                    "Please wait a minute and try again."
+                )
+                print(f"  {final_msg}")
+                if status_callback:
+                    status_callback(final_msg)
+
+    raise last_exception
+
 
 # ─── Load the codes database ─────────────────────────────────────────────────
 
@@ -62,12 +115,14 @@ CODES_DB_PATH = Path(__file__).parent / "codes_db.json"
 with open(CODES_DB_PATH, "r") as f:
     CODES_DB: dict = json.load(f)
 
+
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 
 class ICDCode(BaseModel):
     code: str = Field(..., description="Valid ICD-10 code, e.g. E11")
     description: str = Field(..., description="Human-readable diagnosis name")
     category: str = Field(..., description="Medical category, e.g. Cardiovascular")
+
 
 class PatientDemographics(BaseModel):
     patient_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -79,7 +134,6 @@ class PatientDemographics(BaseModel):
     smoker: bool
     ethnicity: str
 
-from datetime import timedelta
 
 class VisitEvent(BaseModel):
     visit_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -99,6 +153,7 @@ class PatientRecord(BaseModel):
     primary_conditions: list[ICDCode] = Field(default_factory=list)
     timeline: list[VisitEvent] = Field(default_factory=list)
 
+
 # ─── Demographic generation ───────────────────────────────────────────────────
 
 BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]
@@ -109,11 +164,13 @@ ETHNICITIES = [
     "Asian", "South Asian", "Middle Eastern", "Mixed"
 ]
 
+
 def calculate_age(dob: date) -> int:
     today = date.today()
     return today.year - dob.year - (
         (today.month, today.day) < (dob.month, dob.day)
     )
+
 
 def generate_demographics(
     min_age: int = 30,
@@ -138,13 +195,10 @@ def generate_demographics(
         ethnicity=ethnicity
     )
 
-# ─── ICD-10 grounding tools (plain functions) ────────────────────────────────
+
+# ─── ICD-10 grounding tools ───────────────────────────────────────────────────
 
 def lookup_icd_code(query: str) -> dict:
-    """
-    Fuzzy-search the local ICD-10 database.
-    Returns the best matching code dict, or an error dict.
-    """
     query_lower = query.lower()
     best_match = None
     best_score = 0
@@ -172,7 +226,6 @@ def lookup_icd_code(query: str) -> dict:
 
 
 def list_all_conditions() -> list[dict]:
-    """Returns all conditions available in the local ICD-10 database."""
     return [
         {
             "code": code,
@@ -182,20 +235,17 @@ def list_all_conditions() -> list[dict]:
         for code, data in CODES_DB.items()
     ]
 
-# ─── Grounded condition assignment via structured LLM output ─────────────────
+
+# ─── Grounded condition assignment via structured LLM output ──────────────────
 
 def assign_conditions_grounded(
     demographics: PatientDemographics,
-    target_conditions: list[str] | None = None
+    target_conditions: list[str] | None = None,
+    status_callback=None
 ) -> list[ICDCode]:
-    """
-    Asks the LLM to pick diagnoses, but constrains it to only choose
-    from codes that exist in our local database — no hallucination possible.
-    """
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    # Build the allowed-codes list to inject into the prompt
     all_codes = list_all_conditions()
     codes_block = "\n".join(
         f"  {c['code']}: {c['description']} ({c['category']})"
@@ -237,29 +287,25 @@ REQUIRED OUTPUT FORMAT:
 
 Assign appropriate diagnoses from the allowed list."""
 
-    llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    temperature=0.3
-)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
     _gemini_rate_limiter.wait()
-    response = llm.invoke([
+
+    # ← RETRY WRAPPER: catches 429, waits, retries up to 3 times total
+    response = _call_with_retry(llm, [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
-    ])
+    ], status_callback=status_callback)
 
     raw = response.content
 
     if isinstance(raw, list):
         raw = "".join(
-            part.get("text", "")
-            if isinstance(part, dict)
-            else str(part)
+            part.get("text", "") if isinstance(part, dict) else str(part)
             for part in raw
         )
 
     raw = str(raw).strip()
 
-    # Strip markdown fences if present
     if "```" in raw:
         parts = raw.split("```")
         for part in parts:
@@ -272,7 +318,6 @@ Assign appropriate diagnoses from the allowed list."""
 
     codes_data = json.loads(raw)
 
-    # Final validation: reject any code not in our database
     validated = []
     for item in codes_data:
         if item["code"] in CODES_DB:
@@ -283,39 +328,20 @@ Assign appropriate diagnoses from the allowed list."""
     return validated
 
 
-# ─── Master record assembly ───────────────────────────────────────────────────
-
-def generate_patient_record(
-    min_age: int = 30,
-    max_age: int = 80,
-    force_gender: str | None = None,
-    target_conditions: list[str] | None = None,
-    num_years: int = 5
-) -> PatientRecord:
-    demographics = generate_demographics(
-        min_age=min_age, max_age=max_age, force_gender=force_gender
-    )
-    conditions = assign_conditions_grounded(
-        demographics=demographics, target_conditions=target_conditions
-    )
-    record = PatientRecord(demographics=demographics, primary_conditions=conditions)
-    record.timeline = generate_timeline(record, num_years=num_years)
-    return record
-
-# ═══════════════════════════════════════════════
-# PHASE 3: Longitudinal Timeline Engine
-# ═══════════════════════════════════════════════
+# ─── Timeline generation ──────────────────────────────────────────────────────
 
 VISIT_TYPES = [
     "Annual Physical", "Follow-up Visit", "Specialist Consult",
     "Urgent Care Visit", "Routine Lab Review"
 ]
 
+
 def generate_timeline(
     record: "PatientRecord",
     num_years: int = 5,
     min_visits: int = 3,
-    max_visits: int = 8
+    max_visits: int = 8,
+    status_callback=None
 ) -> list[VisitEvent]:
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.messages import SystemMessage, HumanMessage
@@ -385,10 +411,12 @@ Generate the {num_years}-year visit timeline now."""
 
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.4)
     _gemini_rate_limiter.wait()
-    response = llm.invoke([
+
+    # ← RETRY WRAPPER: catches 429, waits, retries up to 3 times total
+    response = _call_with_retry(llm, [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
-    ])
+    ], status_callback=status_callback)
 
     raw = response.content.strip()
     if "```" in raw:
@@ -441,6 +469,33 @@ Generate the {num_years}-year visit timeline now."""
     return validated_visits
 
 
+# ─── Master record assembly ───────────────────────────────────────────────────
+
+def generate_patient_record(
+    min_age: int = 30,
+    max_age: int = 80,
+    force_gender: str | None = None,
+    target_conditions: list[str] | None = None,
+    num_years: int = 5,
+    status_callback=None
+) -> PatientRecord:
+    demographics = generate_demographics(
+        min_age=min_age, max_age=max_age, force_gender=force_gender
+    )
+    conditions = assign_conditions_grounded(
+        demographics=demographics,
+        target_conditions=target_conditions,
+        status_callback=status_callback
+    )
+    record = PatientRecord(demographics=demographics, primary_conditions=conditions)
+    record.timeline = generate_timeline(
+        record,
+        num_years=num_years,
+        status_callback=status_callback
+    )
+    return record
+
+
 # ─── Phase 2 final test ───────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -482,33 +537,3 @@ if __name__ == "__main__":
         print("\n  Assigned conditions:")
         for c in conditions:
             print(f"    [{c.code}] {c.description} ({c.category})")
-
-    print()
-    print("=" * 55)
-    print("STEP 4: Full cohort generation (3 patients)")
-    print("=" * 55)
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        print("  ⚠ Skipping — GOOGLE_API_KEY not set in .env")
-    else:
-        cohort = []
-        for i in range(3):
-            print(f"\n  Generating patient {i+1}/3...")
-            record = generate_patient_record(
-                min_age=40,
-                max_age=75,
-                target_conditions=["hypertension"]
-            )
-            cohort.append(record)
-            print(f"  ✅ {record.demographics.name}, "
-                  f"{record.demographics.age_at_generation}y, "
-                  f"{record.demographics.gender}")
-            for c in record.primary_conditions:
-                print(f"       [{c.code}] {c.description}")
-
-        print(f"\n  Cohort generated: {len(cohort)} patients")
-        print(f"  Total conditions assigned: "
-              f"{sum(len(r.primary_conditions) for r in cohort)}")
-        print(f"  All records valid Pydantic objects: "
-              f"{all(isinstance(r, PatientRecord) for r in cohort)}")
-
