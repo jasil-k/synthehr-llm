@@ -566,7 +566,7 @@ else:
 
     if submitted:
         if min_age > max_age:
-            st.error("Min age cannot be greater than max age.")
+            st.error("Min age cannot be greater than max age.Fix and try again")
         else:
             force_gender = None
             if gender_mix == "All Male":
